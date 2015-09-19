@@ -1,0 +1,76 @@
+#!/bin/bash
+
+args=
+disk=
+size=
+fileName=
+logFile=/tmp/log-${RANDOM}.log
+
+if (( ${#@} != 1 )); then
+	zenity --error --text="Debe seleccionar un solo archivo."
+	exit 1
+fi
+
+fileName="${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS%?}"
+
+if [[ ! ${fileName##*.} =~ ^[Ii][Ss][Oo]$ ]] || [[ ! -f $fileName ]]; then
+	zenity --error --text="Debe seleccionar un archivo ISO."
+	exit 1
+fi
+
+while read device; do
+	model="None"
+	modelFile=/sys/block/${device##*/}/device/model
+	[[ -f $modelFile ]] && read model < $modelFile
+	model=${model//[[:space:]]/_}
+	args+=" 1 $device $model"
+done < <(find /dev -type b -iname '*[!0-9]' | sort)
+
+while (( ${#disk} == 0 )); do
+	disk=$(zenity --list --title="Seleccione un disco" \
+		 --height=300 --width=300 \
+		--text="Seleccione un disco" --radiolist \
+		--column='#' --column='Disco' --column='Modelo' $args)
+	(( $? != 0 )) && exit 0
+	(( ${#disk} == 0 )) && zenity --error \
+				--text="Debe seleccionar un disco"
+done
+
+while read dev all; do
+	case $dev in
+		${disk}*)
+			if ! umount $dev; then
+				zenity --error --text="No se desmonto: ${dev}."
+				exit 1
+			fi
+			;;
+	esac
+done < /proc/mounts
+
+read size < <(stat --printf="%s" "$fileName")
+
+dd if="$fileName" of=$disk > $logFile 2>&1 &
+pidDD=$!
+
+sleep 2
+
+(
+while [[ -d /proc/$pidDD ]]; do
+	kill -SIGUSR1 $pidDD
+	read currSize all < <(tail -n1 $logFile)
+	perc=$((currSize*100/size))
+	echo $perc
+	echo "#Progreso: ${perc}%..."
+	sleep 5
+done
+) | zenity --progress --title="Progreso" --percentage=0 --no-cancel \
+--width=300 --auto-close
+
+wait $pidDD
+if (( $? == 0 )); then
+	zenity --info --text="El proceso ha finalizado de manera correcta."
+else
+	zenity --error --text="Hubo un error al finalizar el proceso."
+fi
+
+rm $logFile
